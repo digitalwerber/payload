@@ -1,6 +1,6 @@
 import type { SanitizedCollectionConfig } from '../collections/config/types.js'
 import type { Payload } from '../index.js'
-import type { PayloadRequest } from '../types/index.js'
+import type { PayloadRequest, Where } from '../types/index.js'
 
 import { preferencesCollectionSlug } from './config.js'
 
@@ -13,36 +13,34 @@ type Args = {
   payload: Payload
   req: PayloadRequest
 }
+
+// Each id binds up to two parameters (user and key), so a batch stays below the 100 bound
+// parameters Cloudflare D1 allows per statement
+const DELETE_BATCH_SIZE = 40
+
 export const deleteUserPreferences = async ({ collectionConfig, ids, payload, req }: Args) => {
-  if (collectionConfig.auth) {
+  for (let i = 0; i < ids.length; i += DELETE_BATCH_SIZE) {
+    const batch = ids.slice(i, i + DELETE_BATCH_SIZE)
+
+    const documentPreferences: Where = {
+      key: { in: batch.map((id) => `collection-${collectionConfig.slug}-${id}`) },
+    }
+
     await payload.db.deleteMany({
       collection: preferencesCollectionSlug,
       req,
-      where: {
-        or: [
-          {
-            and: [
-              {
-                'user.value': { in: ids },
-              },
-              {
-                'user.relationTo': { equals: collectionConfig.slug },
-              },
+      where: collectionConfig.auth
+        ? {
+            or: [
+              // An object `equals` compares only the column of this collection, while
+              // `user.value` would compare the ids against one column per auth collection
+              ...batch.map((value) => ({
+                user: { equals: { relationTo: collectionConfig.slug, value } },
+              })),
+              documentPreferences,
             ],
-          },
-          {
-            key: { in: ids.map((id) => `collection-${collectionConfig.slug}-${id}`) },
-          },
-        ],
-      },
-    })
-  } else {
-    await payload.db.deleteMany({
-      collection: preferencesCollectionSlug,
-      req,
-      where: {
-        key: { in: ids.map((id) => `collection-${collectionConfig.slug}-${id}`) },
-      },
+          }
+        : documentPreferences,
     })
   }
 }
